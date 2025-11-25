@@ -1,8 +1,15 @@
-name: Terraform Deploy
+name: Terraform Manual Deploy
 
 on:
-  push:
-    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Choose Terraform operation"
+        required: true
+        type: choice
+        options:
+          - apply
+          - destroy
 
 jobs:
   terraform:
@@ -22,9 +29,6 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-1
 
-      - name: Check AWS Identity
-        run: aws sts get-caller-identity
-
       - name: Terraform Init
         run: terraform init
 
@@ -34,5 +38,10 @@ jobs:
       - name: Terraform Plan
         run: terraform plan -out=tfplan
 
-      - name: Terraform Apply
-        run: terraform apply -auto-approve tfplan
+      - name: Terraform Action
+        run: |
+          if [ "${{ github.event.inputs.action }}" = "apply" ]; then
+            terraform apply -auto-approve tfplan
+          else
+            terraform destroy -auto-approve
+          fi
