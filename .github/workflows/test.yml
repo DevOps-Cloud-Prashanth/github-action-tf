@@ -1,20 +1,19 @@
-name: Terraform Manual Deploy
+name: Terraform staged deploy with approvals
 
 on:
   workflow_dispatch:
     inputs:
-      action:
-        description: "Choose Terraform operation"
+      run_destroy:
+        description: "If true, enable destroy stage at end (default false)"
         required: true
         type: choice
         options:
-          - apply
-          - destroy
+          - "false"
+          - "true"
 
 jobs:
-  terraform:
+  validate:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -35,13 +34,117 @@ jobs:
       - name: Terraform Validate
         run: terraform validate
 
-      - name: Terraform Plan
+  plan:
+    needs: validate
+    runs-on: ubuntu-latest
+    outputs:
+      plan-artifact: tfplan
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Terraform Plan (binary)
         run: terraform plan -out=tfplan
 
-      - name: Terraform Action
+      - name: Save human-readable plan
+        run: terraform show -no-color tfplan > plan.txt
+
+      - name: Upload plan artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-artifacts
+          path: |
+            tfplan
+            plan.txt
+
+  wait-apply-approval:
+    needs: plan
+    runs-on: ubuntu-latest
+    environment: apply-approval          # <--- this requires manual approval in GitHub
+    steps:
+      - name: Download plan artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-artifacts
+          path: ./planfiles
+
+      - name: Print plan to logs (for quick review)
         run: |
-          if [ "${{ github.event.inputs.action }}" = "apply" ]; then
-            terraform apply -auto-approve tfplan
-          else
-            terraform destroy -auto-approve
-          fi
+          echo "===== Human readable plan (plan.txt) ====="
+          sed -n '1,200p' ./planfiles/plan.txt || true
+          echo "===== Download full plan.txt from artifacts in Actions UI if truncated ====="
+
+  apply:
+    needs: wait-apply-approval
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Download plan artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-artifacts
+          path: ./planfiles
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Terraform Apply (use plan)
+        run: terraform apply -auto-approve ./planfiles/tfplan
+
+  wait-destroy-approval:
+    if: ${{ github.event.inputs.run_destroy == 'true' }}
+    needs: apply
+    runs-on: ubuntu-latest
+    environment: destroy-approval    # <--- manual approval before destroy
+    steps:
+      - name: "Approved to run destroy"
+        run: echo "Destroy approved; continuing to destroy job."
+
+  destroy:
+    if: ${{ github.event.inputs.run_destroy == 'true' }}
+    needs: wait-destroy-approval
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Terraform Destroy (manual destroy)
+        run: terraform destroy -auto-approve
