@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       run_destroy:
-        description: "If true, enable destroy stage at end (default false)"
+        description: "Enable destroy stage (true/false)"
         required: true
         type: choice
         options:
@@ -12,57 +12,63 @@ on:
           - "true"
 
 jobs:
+
+  approve-validate:
+    runs-on: ubuntu-latest
+    environment: validate-approval   # ⛔ WAIT FOR APPROVAL
+    steps:
+      - run: echo "Approved to start validation stage"
+
+
   validate:
+    needs: approve-validate
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
-
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-1
-
       - name: Terraform Init
         run: terraform init
-
       - name: Terraform Validate
         run: terraform validate
 
-  plan:
+
+  approve-plan:
     needs: validate
     runs-on: ubuntu-latest
-    outputs:
-      plan-artifact: tfplan
+    environment: plan-approval    # ⛔ WAIT FOR APPROVAL
+    steps:
+      - run: echo "Approved to start plan stage"
+
+
+  plan:
+    needs: approve-plan
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
-
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-1
-
       - name: Terraform Init
         run: terraform init
-
-      - name: Terraform Plan (binary)
+      - name: Terraform Plan
         run: terraform plan -out=tfplan
-
-      - name: Save human-readable plan
+      - name: Save Human Readable Plan
         run: terraform show -no-color tfplan > plan.txt
-
-      - name: Upload plan artifacts
+      - name: Upload Plan
         uses: actions/upload-artifact@v4
         with:
           name: tfplan-artifacts
@@ -70,81 +76,64 @@ jobs:
             tfplan
             plan.txt
 
-  wait-apply-approval:
+
+  approve-apply:
     needs: plan
     runs-on: ubuntu-latest
-    environment: apply-approval          # <--- this requires manual approval in GitHub
+    environment: apply-approval    # ⛔ WAIT FOR APPROVAL
     steps:
-      - name: Download plan artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: tfplan-artifacts
-          path: ./planfiles
+      - run: echo "Approved to start apply stage"
 
-      - name: Print plan to logs (for quick review)
-        run: |
-          echo "===== Human readable plan (plan.txt) ====="
-          sed -n '1,200p' ./planfiles/plan.txt || true
-          echo "===== Download full plan.txt from artifacts in Actions UI if truncated ====="
 
   apply:
-    needs: wait-apply-approval
+    needs: approve-apply
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
-
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-1
-
-      - name: Download plan artifacts
+      - name: Terraform Init
+        run: terraform init
+      - name: Download plan
         uses: actions/download-artifact@v4
         with:
           name: tfplan-artifacts
-          path: ./planfiles
+      - name: Terraform Apply
+        run: terraform apply -auto-approve tfplan
 
-      - name: Terraform Init
-        run: terraform init
 
-      - name: Terraform Apply (use plan)
-        run: terraform apply -auto-approve ./planfiles/tfplan
-
-  wait-destroy-approval:
+  approve-destroy:
     if: ${{ github.event.inputs.run_destroy == 'true' }}
     needs: apply
     runs-on: ubuntu-latest
-    environment: destroy-approval    # <--- manual approval before destroy
+    environment: destroy-approval    # ⛔ WAIT FOR APPROVAL
     steps:
-      - name: "Approved to run destroy"
-        run: echo "Destroy approved; continuing to destroy job."
+      - run: echo "Approved to start destroy stage"
+
 
   destroy:
     if: ${{ github.event.inputs.run_destroy == 'true' }}
-    needs: wait-destroy-approval
+    needs: approve-destroy
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
-
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-1
-
       - name: Terraform Init
         run: terraform init
-
-      - name: Terraform Destroy (manual destroy)
+      - name: Terraform Destroy
         run: terraform destroy -auto-approve
